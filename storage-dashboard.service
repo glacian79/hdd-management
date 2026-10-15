@@ -1,0 +1,13 @@
+[Unit]
+Description=Storage dashboard
+After=network.target
+
+[Service]
+User=john
+ExecStart=/usr/bin/python3 /home/john/claude/hdd-management/server.py
+Restart=on-failure
+Nice=15
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

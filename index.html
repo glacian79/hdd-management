@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storage Dashboard</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #fff; --text: #1c2330; --muted: #6a7384;
+    --used: #3b6fd4; --free: #d9dee8; --warn: #d9534f; --border: #e2e5ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --text: #e6e9ef; --muted: #8b94a6;
+      --used: #5b8def; --free: #343b49; --warn: #ef6b67; --border: #2a303c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text);
+         font: 15px/1.4 system-ui, sans-serif; }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  .sub { color: var(--muted); margin-bottom: 20px; font-size: 13px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+          padding: 18px; text-align: center; }
+  .card.warn { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn); }
+  .name { font-weight: 600; font-size: 17px; }
+  .dev { color: var(--muted); font-size: 12px; margin-bottom: 10px; word-break: break-all; }
+  svg { width: 180px; height: 180px; }
+  .used { fill: var(--used); } .free { fill: var(--free); }
+  .pct { font-size: 26px; font-weight: 700; margin-top: 6px; }
+  .warn .pct { color: var(--warn); }
+  .stats { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .stats b { color: var(--text); }
+  .err { color: var(--warn); }
+  body { padding-bottom: 320px; }
+  .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: -8px 0 18px; }
+  .actions .sub { margin: 0; }
+  button { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px; cursor: pointer;
+           background: var(--card); color: var(--text); border: 1px solid var(--border); }
+  button:hover:not(:disabled) { border-color: var(--used); }
+  button:disabled { opacity: .55; cursor: default; }
+  .card { position: relative; }
+  .card:hover { z-index: 5; }
+  .tip { display: none; position: absolute; left: 0; right: 0; top: calc(100% + 6px);
+         background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+         padding: 14px 16px; text-align: left; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+  .card:hover .tip, .card.open .tip { display: block; }
+  .tip h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); font-weight: 600; }
+  .row { display: grid; grid-template-columns: 10px 1fr auto; gap: 8px; align-items: center;
+         font-size: 13px; padding: 3px 0; }
+  .row i { width: 10px; height: 10px; border-radius: 3px; display: block; }
+  .row small { color: var(--muted); }
+  .bar { grid-column: 2 / 4; height: 4px; border-radius: 2px; background: var(--free); margin-top: -2px; }
+  .bar span { display: block; height: 100%; border-radius: 2px; }
+  .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .tabs { display: flex; gap: 6px; margin: -8px 0 20px; padding-bottom: 12px; border-bottom: 1px solid var(--border);
+          overflow-x: auto; white-space: nowrap; }
+  .tabs a { padding: 7px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--card);
+            color: var(--text); text-decoration: none; font-size: 14px; }
+  .tabs a:hover { border-color: var(--used); }
+  .tabs a.active { background: var(--used); border-color: var(--used); color: #fff; }
+</style>
+</head>
+<body>
+<nav class="tabs" id="tabs"></nav>
+<script>
+(function () {
+  var pages = [['Temperatures', 8086], ['Tides', 8087], ['Report counter', 8089], ['Storage', 8085]], el = document.getElementById('tabs');
+  pages.forEach(function (p) {
+    var a = document.createElement('a');
+    a.textContent = p[0];
+    a.href = location.protocol + '//' + location.hostname + ':' + p[1] + '/';
+    if (String(location.port) === String(p[1])) a.className = 'active';
+    el.appendChild(a);
+  });
+})();
+</script>
+
+<h1>Storage</h1>
+<div class="sub" id="status">Loading…</div>
+<div class="actions">
+  <button id="btn-refresh" type="button">Refresh usage</button>
+  <button id="btn-rescan" type="button" title="Re-reads every file on every drive; takes several minutes">Rescan breakdown</button>
+  <span class="sub" id="rescan-note"></span>
+</div>
+<div class="grid" id="grid"></div>
+
+<script>
+const NS = "http://www.w3.org/2000/svg";
+
+function fmt(bytes) {
+  const u = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let i = 0;
+  while (bytes >= 1024 && i < u.length - 1) { bytes /= 1024; i++; }
+  return bytes.toFixed(bytes >= 100 || i === 0 ? 0 : 1) + " " + u[i];
+}
+
+function pie(usedFrac, color) {
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "-1 -1 2 2");
+  svg.setAttribute("role", "img");
+  const mk = (cls, d) => {
+    const p = document.createElementNS(NS, "path");
+    p.setAttribute("class", cls); p.setAttribute("d", d); svg.appendChild(p);
+    if (cls === "used") p.style.fill = color;
+  };
+  const circle = (cls) => {
+    const c = document.createElementNS(NS, "circle");
+    c.setAttribute("class", cls); c.setAttribute("r", "1"); svg.appendChild(c);
+    if (cls === "used") c.style.fill = color;
+  };
+  if (usedFrac >= 0.9995) { circle("used"); }
+  else if (usedFrac <= 0.0005) { circle("free"); }
+  else {
+    // used slice starts at 12 o'clock and runs clockwise
+    const a = usedFrac * 2 * Math.PI;
+    const x = Math.sin(a), y = -Math.cos(a), large = usedFrac > 0.5 ? 1 : 0;
+    mk("free", "M0 0 L0 -1 A1 1 0 " + (1 - large) + " 0 " + x + " " + y + " Z");
+    mk("used", "M0 0 L0 -1 A1 1 0 " + large + " 1 " + x + " " + y + " Z");
+  }
+  return svg;
+}
+
+// one colour per drive (none red, so the red warning rim stays distinct)
+const DRIVE_COLORS = ["#4f84f0", "#2fb7a4", "#a76be0", "#e0a82e", "#4fb85f", "#e070b8", "#38a8d8"];
+
+function card(d, i) {
+  const el = document.createElement("div");
+  el.className = "card" + (d.pct >= 90 ? " warn" : "");
+  const name = document.createElement("div"); name.className = "name"; name.textContent = d.label;
+  const dev = document.createElement("div"); dev.className = "dev";
+  dev.textContent = d.device + " · " + d.fstype + " · " + d.mount;
+  const pct = document.createElement("div"); pct.className = "pct"; pct.textContent = d.pct + "% used";
+  const st = document.createElement("div"); st.className = "stats";
+  st.innerHTML = "<b></b> free of <b></b> (<span></span> used)";
+  const b = st.querySelectorAll("b");
+  b[0].textContent = fmt(d.free); b[1].textContent = fmt(d.total);
+  st.querySelector("span").textContent = fmt(d.used);
+  el.append(name, dev, pie(d.pct / 100, DRIVE_COLORS[i % DRIVE_COLORS.length]), pct, st, tip(d));
+  el.addEventListener("click", () => el.classList.toggle("open"));  // touch devices
+  return el;
+}
+
+const COLORS = {
+  "Videos": "#e5734b", "Music": "#a76be0", "Pictures": "#4fb3a5", "Text & documents": "#e0b43f",
+  "Programs & code": "#5b8def", "Archives & disk images": "#c9689b", "Other": "#8b94a6",
+  "Unreadable / system": "#59627a",
+};
+let breakdown = { results: {}, order: [], scanning: null };
+
+function ago(ts) {
+  const m = Math.round((Date.now() / 1000 - ts) / 60);
+  return m < 1 ? "just now" : m < 120 ? m + " min ago" : Math.round(m / 60) + " h ago";
+}
+
+function tip(d) {
+  const el = document.createElement("div"); el.className = "tip";
+  const h = document.createElement("h3"); h.textContent = "What's using the space on " + d.label;
+  el.append(h);
+  const res = breakdown.results[d.mount];
+  const note = document.createElement("div"); note.className = "note";
+  if (!res) {
+    note.textContent = breakdown.scanning === d.mount
+      ? "Scanning this drive for the first time… check back in a few minutes."
+      : "Waiting for the first scan of this drive.";
+    el.append(note);
+    return el;
+  }
+  const total = Object.values(res.categories).reduce((a, b) => a + b, 0) || 1;
+  const cats = breakdown.order.filter(c => res.categories[c] > 0)
+    .sort((a, b) => res.categories[b] - res.categories[a]);
+  for (const c of cats) {
+    const v = res.categories[c], p = 100 * v / total;
+    const row = document.createElement("div"); row.className = "row";
+    const dot = document.createElement("i"); dot.style.background = COLORS[c];
+    const lab = document.createElement("span"); lab.textContent = c;
+    const val = document.createElement("span");
+    val.textContent = fmt(v) + " ";
+    const sm = document.createElement("small"); sm.textContent = p.toFixed(1) + "%";
+    val.append(sm);
+    const bar = document.createElement("div"); bar.className = "bar";
+    const fill = document.createElement("span");
+    fill.style.width = p + "%"; fill.style.background = COLORS[c];
+    bar.append(fill);
+    row.append(dot, lab, val, bar);
+    el.append(row);
+  }
+  note.textContent = "Scanned " + ago(res.updated) + (breakdown.scanning === d.mount ? " · rescanning…" : "");
+  el.append(note);
+  return el;
+}
+
+async function refresh(manual) {
+  const status = document.getElementById("status");
+  // don't rebuild the cards while one is being hovered or held open
+  if (!manual && document.querySelector(".card:hover, .card.open")) return;
+  try {
+    const [r, rb] = await Promise.all([
+      fetch("/api/storage", { cache: "no-store" }),
+      fetch("/api/breakdown", { cache: "no-store" }),
+    ]);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    if (rb.ok) breakdown = await rb.json();
+    const data = await r.json();
+    document.getElementById("grid").replaceChildren(...data.map(card));
+    status.className = "sub";
+    status.textContent = "Updated " + new Date().toLocaleTimeString() + " · refreshes every 30s";
+    showScan();
+  } catch (e) {
+    status.className = "sub err";
+    status.textContent = "Failed to load: " + e.message;
+  }
+}
+function showScan() {
+  const note = document.getElementById("rescan-note"), btn = document.getElementById("btn-rescan");
+  const busy = breakdown.pending || breakdown.scanning;
+  btn.disabled = !!busy;
+  note.textContent = breakdown.scanning ? "Scanning " + breakdown.scanning + "…"
+    : breakdown.pending ? "Rescan queued…" : "";
+}
+async function pollScan() {
+  try {
+    const rb = await fetch("/api/breakdown", { cache: "no-store" });
+    if (rb.ok) breakdown = await rb.json();
+  } catch (e) {}
+  showScan();
+}
+
+document.getElementById("btn-refresh").addEventListener("click", () => {
+  document.querySelectorAll(".card.open").forEach(c => c.classList.remove("open"));
+  refresh(true);
+});
+document.getElementById("btn-rescan").addEventListener("click", async () => {
+  await fetch("/api/rescan", { method: "POST" });
+  pollScan();
+});
+refresh();
+setInterval(refresh, 30000);
+setInterval(() => { if (breakdown.pending || breakdown.scanning) pollScan(); }, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+homarr.credentials
+breakdown-cache.json
+__pycache__/
+*.pyc
+*.tmp
